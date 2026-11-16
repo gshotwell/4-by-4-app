@@ -87,6 +87,8 @@ class MainActivity : Activity() {
     private var summaryShownFor = 0L
     private var savedCsv: File? = null
 
+    private lateinit var logText: TextView
+    private var shownLogVersion = -1
     private lateinit var sounds: Sounds
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private lateinit var healthText: TextView
@@ -99,6 +101,7 @@ class MainActivity : Activity() {
         buildUi()
         requestPermsIfNeeded()
         handleIntent(intent)
+        if (Engine.logLines.isEmpty()) logPermState()
     }
 
     override fun onNewIntent(intent: Intent?) {
@@ -169,6 +172,17 @@ class MainActivity : Activity() {
 
     private fun hasBtPerms() = btPerms().all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
 
+    private fun logPermState() {
+        val parts = (btPerms().toList() + if (Build.VERSION.SDK_INT >= 33) listOf(Manifest.permission.POST_NOTIFICATIONS) else emptyList())
+            .map { it.substringAfterLast('.') + "=" + (if (checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED) "yes" else "NO") }
+        val bt = getSystemService(BluetoothManager::class.java)?.adapter
+        Engine.log("Android ${Build.VERSION.SDK_INT}, ${Build.MANUFACTURER} ${Build.MODEL}; Bluetooth ${if (bt?.isEnabled == true) "on" else "OFF"}; " + parts.joinToString(", "))
+        if (Build.VERSION.SDK_INT < 31) {
+            val lm = getSystemService(android.location.LocationManager::class.java)
+            if (lm?.isLocationEnabled == false) Engine.log("Location is OFF – Android 11 and older can't scan for Bluetooth without it")
+        }
+    }
+
     private fun requestPermsIfNeeded() {
         val want = btPerms().toMutableList()
         if (Build.VERSION.SDK_INT >= 33) want += Manifest.permission.POST_NOTIFICATIONS
@@ -178,6 +192,7 @@ class MainActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        logPermState()
         if (hasBtPerms()) autoConnect()
     }
 
@@ -185,7 +200,8 @@ class MainActivity : Activity() {
 
     private fun autoConnect() {
         val addr = prefs().getString("strapAddr", null) ?: return
-        if (!hasBtPerms() || Engine.conn != Conn.NONE) return
+        if (!hasBtPerms()) { Engine.log("Can't auto-connect: Bluetooth permission missing"); return }
+        if (Engine.conn != Conn.NONE) return
         WorkoutService.send(this, WorkoutService.ACTION_CONNECT, addr, prefs().getString("strapName", null))
     }
 
@@ -199,23 +215,33 @@ class MainActivity : Activity() {
         val scanner = adapter.bluetoothLeScanner ?: run { toast("Bluetooth scanner unavailable"); return }
 
         val found = LinkedHashMap<String, String>()
+        val others = HashSet<String>()
+        Engine.log("Scanning for straps…")
         val labels = ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, mutableListOf())
         val hrUuid = ParcelUuid(HrBle.HR_SERVICE)
         val cb = object : ScanCallback() {
+            override fun onScanFailed(errorCode: Int) { Engine.log("Scan failed: error $errorCode") }
             override fun onScanResult(callbackType: Int, r: ScanResult) {
                 val name = r.scanRecord?.deviceName ?: r.device.name
                 val isHr = r.scanRecord?.serviceUuids?.contains(hrUuid) == true ||
                     name?.contains("Polar", ignoreCase = true) == true
-                if (!isHr) return
+                if (!isHr) { others.add(r.device.address); return }
                 val addr = r.device.address
                 if (addr !in found) {
                     found[addr] = name ?: addr
+                    Engine.log("Scan saw: ${name ?: "unnamed HR device"} ($addr) RSSI ${r.rssi}")
                     labels.add("${name ?: "Unknown strap"}   ($addr)")
                 }
             }
         }
         var stopped = false
-        fun stop() { if (!stopped) { stopped = true; try { scanner.stopScan(cb) } catch (_: Exception) {} } }
+        fun stop() {
+            if (!stopped) {
+                stopped = true
+                try { scanner.stopScan(cb) } catch (_: Exception) {}
+                Engine.log("Scan stopped: ${found.size} heart-rate device(s), ${others.size} other device(s) seen")
+            }
+        }
 
         AlertDialog.Builder(this)
             .setTitle("Looking for straps… (wear it; wet the electrodes)")
@@ -223,6 +249,7 @@ class MainActivity : Activity() {
                 stop()
                 val addr = found.keys.elementAt(which)
                 val name = found[addr]
+                Engine.log("Picked $name")
                 prefs().edit().putString("strapAddr", addr).putString("strapName", name).apply()
                 WorkoutService.send(this, WorkoutService.ACTION_CONNECT, addr, name)
             }
@@ -353,6 +380,17 @@ class MainActivity : Activity() {
             btn("Test in") { sounds.play(Snd.IN, true) },
         ), 8)
         setupView.addSpaced(alerts)
+
+        val logCard = card()
+        logCard.addView(tv("Connection log", 16f, bold = true))
+        logText = tv("", 11f, color = MUTED).apply { typeface = Typeface.MONOSPACE; setTextIsSelectable(true) }
+        logCard.addSpaced(logText, 6)
+        logCard.addSpaced(btn("Copy log") {
+            val cm = getSystemService(android.content.ClipboardManager::class.java)
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("4x4 log", Engine.logLines.joinToString("\n")))
+            toast("Log copied")
+        }, 6)
+        setupView.addSpaced(logCard)
 
         startBtn = btn("Start workout", GREEN_BTN) { startWorkout() }
         setupView.addSpaced(startBtn, 16)
@@ -506,6 +544,11 @@ class MainActivity : Activity() {
         val keepScreen = mode == 1 && (boolInputs["keepScreen"]?.isChecked ?: true)
         if (keepScreen) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        if (shownLogVersion != Engine.logVersion) {
+            shownLogVersion = Engine.logVersion
+            logText.text = if (Engine.logLines.isEmpty()) "(nothing yet)" else Engine.logLines.toList().takeLast(30).joinToString("\n")
+        }
 
         when (mode) {
             0 -> scroll.setBackgroundColor(BG)

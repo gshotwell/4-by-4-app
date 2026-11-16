@@ -54,6 +54,18 @@ object Engine {
     var conn = Conn.NONE; private set
     var connName = ""; private set
 
+    // ---------- connection log (shown on screen for debugging) ----------
+    val logLines = ArrayDeque<String>()
+    var logVersion = 0; private set
+    private val logFmt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+    fun log(msg: String) {
+        android.util.Log.i("hr4x4", msg)
+        logLines.addLast("${logFmt.format(java.util.Date())}  $msg")
+        while (logLines.size > 80) logLines.removeFirst()
+        logVersion++
+        notifyUi()
+    }
+
     private val listeners = mutableSetOf<() -> Unit>()
     fun addListener(l: () -> Unit) { listeners.add(l) }
     fun removeListener(l: () -> Unit) { listeners.remove(l) }
