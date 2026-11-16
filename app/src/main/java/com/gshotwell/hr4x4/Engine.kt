@@ -5,7 +5,13 @@ import kotlin.math.ceil
 
 enum class Kind { WARMUP, WORK, REC, COOL }
 data class Zone(val lo: Int, val hi: Int)
-data class Phase(val kind: Kind, val idx: Int, val name: String, val durSec: Double, val zone: Zone?)
+data class Phase(
+    val kind: Kind, val idx: Int, val name: String, val durSec: Double, val zone: Zone?,
+    /** All-out max-test effort: zone alerts off, effort cues on. */
+    val test: Boolean = false,
+    /** Short all-out sprint after the test, to check the peak doesn't go higher. */
+    val verify: Boolean = false,
+)
 data class Sample(val t: Double, val hr: Int, val phase: Int, val kind: Kind)
 
 enum class ZS { NONE, LOW, IN, HIGH }
@@ -50,6 +56,11 @@ object Engine {
     private var lastAlertAt = 0L
     private var lastAnnounced = ZS.NONE
     private var lastCountdown = -1
+    private val firedCues = mutableSetOf<String>()
+    private fun fmtMin(sec: Double): String {
+        val m = sec / 60
+        return if (m % 1.0 == 0.0) "${m.toInt()} minutes" else "${(sec).toInt()} seconds"
+    }
 
     val samples = mutableListOf<Sample>()
     /** sessionStartWall of the last session already written to disk / Health Connect. */
@@ -93,9 +104,18 @@ object Engine {
         fun z(lo: String, hi: String) = Zone(st.bpm(st.n(lo)), st.bpm(st.n(hi)))
         val reps = st.n("reps").toInt().coerceIn(1, 20)
         if (st.n("wuMin") > 0) p += Phase(Kind.WARMUP, 0, "Warm-up", st.n("wuMin") * 60, z("wuLo", "wuHi"))
+        val maxTest = st.b("maxTest")
         for (i in 1..reps) {
-            p += Phase(Kind.WORK, i, "Interval $i of $reps", st.n("workMin") * 60, z("workLo", "workHi"))
+            if (maxTest && i == reps) {
+                p += Phase(Kind.WORK, i, "Interval $i · max test", st.n("workMin") * 60, null, test = true)
+            } else {
+                p += Phase(Kind.WORK, i, "Interval $i of $reps", st.n("workMin") * 60, z("workLo", "workHi"))
+            }
             if (i < reps) p += Phase(Kind.REC, i, "Recovery $i", st.n("recMin") * 60, z("recLo", "recHi"))
+        }
+        if (maxTest && st.b("maxVerify")) {
+            p += Phase(Kind.REC, reps, "Recovery before check", st.n("recMin") * 60, z("recLo", "recHi"))
+            p += Phase(Kind.WORK, 0, "Verification sprint", 60.0, null, test = true, verify = true)
         }
         if (st.n("cdMin") > 0) p += Phase(Kind.COOL, 0, "Cool-down", st.n("cdMin") * 60, null)
         return p
@@ -156,7 +176,7 @@ object Engine {
     }
 
     private fun enterPhase(i: Int) {
-        phaseIdx = i; phaseStart = now(); lastCountdown = -1
+        phaseIdx = i; phaseStart = now(); lastCountdown = -1; firedCues.clear()
         zone = ZS.NONE; pending = null; lastAlertAt = 0; lastAnnounced = ZS.NONE
         if (i >= plan.size) { finish(); return }
         saveState()
@@ -167,11 +187,15 @@ object Engine {
             sink?.mediaNext()
         }
         val zt = ph.zone?.let { " Target ${it.lo} to ${it.hi}." } ?: ""
-        when (ph.kind) {
+        when {
+            ph.verify -> say("Verification. All out for one minute. Go.")
+            ph.test -> say("Max test. Hold the hardest pace you can sustain for ${fmtMin(ph.durSec)}, and empty the tank in the last minute. Go.")
+            else -> when (ph.kind) {
             Kind.WORK -> say("Interval ${ph.idx}. Go.$zt")
             Kind.REC -> say("Recover.$zt")
             Kind.WARMUP -> say("Warm up.$zt")
             Kind.COOL -> say("Cool down. Nice work.")
+            }
         }
         notifyUi()
     }
@@ -209,6 +233,16 @@ object Engine {
             if (sec in 1..3 && sec != lastCountdown) { lastCountdown = sec; sound(Snd.TICK) }
         }
         if (remain <= 0) { enterPhase(phaseIdx + 1); return }
+        if (ph.test) {
+            fun cue(key: String, at: Double, text: String) {
+                if (remain <= at && key !in firedCues) { firedCues += key; sound(Snd.PHASE); say(text) }
+            }
+            if (!ph.verify) {
+                if (ph.durSec > 150) cue("half", ph.durSec / 2, "Halfway. Hold it.")
+                cue("last", 60.0, "Last minute. All out.")
+            }
+            cue("thirty", 30.0, "Thirty seconds. Everything you've got.")
+        }
         if (now() - lastSaveAt >= 1000) saveState()
         notifyUi()
     }
@@ -262,7 +296,7 @@ object Engine {
     private fun evaluate(hr: Int) {
         val st = s ?: return
         val z = currentPhase?.zone
-        if (z == null) { zone = ZS.NONE; return }
+        if (z == null || currentPhase?.test == true) { zone = ZS.NONE; return }
         val next = rawState(hr, z, st.hyst)
         if (next == zone) { pending = null; maybeRemind(); return }
         if (pending != next) { pending = next; pendingSince = now() }
@@ -293,6 +327,27 @@ object Engine {
             ZS.IN -> sound(Snd.IN)
             ZS.NONE -> {}
         }
+    }
+
+    /** Highest 5-sample median HR over the phases matching [which]. */
+    fun medianPeak(which: (Phase) -> Boolean): Int {
+        val idx = plan.indices.filter { which(plan[it]) }.toSet()
+        val hrs = samples.filter { it.phase in idx }.map { it.hr }
+        if (hrs.size < 5) return hrs.maxOrNull() ?: 0
+        return hrs.windowed(5).maxOf { it.sorted()[2] }
+    }
+
+    data class MaxTest(val testPeak: Int, val verifyPeak: Int?, val estimate: Int, val plateau: Boolean?)
+
+    /** Result of the max-test interval (and verification sprint), if the session had one. */
+    fun maxTestResult(): MaxTest? {
+        if (plan.none { it.test && !it.verify }) return null
+        val t = medianPeak { it.test && !it.verify }
+        if (t <= 0) return null
+        val hasVerify = plan.any { it.verify }
+        val v = if (hasVerify) medianPeak { it.verify }.takeIf { it > 0 } else null
+        val plateau = v?.let { it <= t + 2 }
+        return MaxTest(t, v, maxOf(t, v ?: 0), plateau)
     }
 
     fun csv(): String = buildString {

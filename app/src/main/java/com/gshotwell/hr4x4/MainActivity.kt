@@ -93,6 +93,7 @@ class MainActivity : Activity() {
     private lateinit var sTiles: LinearLayout
     private lateinit var sMaxCard: LinearLayout
     private lateinit var maxSeenRow: LinearLayout
+    private lateinit var verifyRow: View
     private lateinit var maxSeenText: TextView
     private lateinit var maxSeenBtn: Button
     private lateinit var sChart: HrChartView
@@ -608,6 +609,10 @@ class MainActivity : Activity() {
         plan.addView(settingRow("Work", "minutes each", stepper("workMin")))
         plan.addView(settingRow("Recovery", "minutes between", stepper("recMin")))
         plan.addView(settingRow("Cool-down", "minutes", stepper("cdMin")))
+        plan.addView(divider(), LinearLayout.LayoutParams(MATCH_PARENT, dp(1)))
+        plan.addView(switchRow("maxTest", "Max test in the last interval", "All-out time trial; too-high alerts off. Gives a max heart rate estimate."))
+        verifyRow = switchRow("maxVerify", "Add a verification sprint", "After a recovery, 1 min all-out to confirm the peak")
+        plan.addView(verifyRow)
         v.addSpaced(plan)
 
         // zones
@@ -805,6 +810,9 @@ class MainActivity : Activity() {
         zoneBpm["work"]?.text = z("workLo", "workHi")
         zoneBpm["rec"]?.text = z("recLo", "recHi")
         zoneBpm["wu"]?.text = z("wuLo", "wuHi")
+        val testOn = s.b("maxTest")
+        verifyRow.alpha = if (testOn) 1f else 0.4f
+        switches["maxVerify"]?.isEnabled = testOn
         val seen = prefs().getInt("maxSeen", 0)
         if (seen <= 0) {
             maxSeenText.text = "Highest seen: none yet. A hard session will record your peak, and the app will offer to update this when you beat it."
@@ -815,6 +823,12 @@ class MainActivity : Activity() {
                 if (seen < s.maxHr) "\nBelow your setting. That's normal: 4x4 sessions rarely reach true max." else ""
             maxSeenBtn.visibility = if (seen > s.maxHr) View.VISIBLE else View.GONE
             maxSeenBtn.text = "Use $seen"
+        }
+        val test = prefs().getInt("maxTestResult", 0)
+        if (test > 0) {
+            val d = SimpleDateFormat("d MMM", Locale.getDefault()).format(Date(prefs().getLong("maxTestWall", 0)))
+            val conf = if (prefs().getBoolean("maxTestPlateau", false)) ", confirmed" else ""
+            maxSeenText.text = "${maxSeenText.text}\nLast max test: $test bpm ($d$conf)"
         }
     }
 
@@ -924,16 +938,16 @@ class MainActivity : Activity() {
         val ph = Engine.currentPhase ?: return
         val el = Engine.phaseElapsed()
         val paused = Engine.pausedAt != null
-        val kindCol = Ui.kindColor(ph.kind)
+        val kindCol = Ui.phaseColor(ph)
 
-        wPhaseKicker.text = when (ph.kind) {
+        wPhaseKicker.text = if (ph.verify) "VERIFICATION" else if (ph.test) "MAX TEST · INTERVAL ${ph.idx}" else when (ph.kind) {
             Kind.WORK -> "WORK · ${ph.idx} OF ${Engine.plan.count { it.kind == Kind.WORK }}"
             Kind.REC -> "RECOVERY"
             Kind.WARMUP -> "WARM-UP"
             Kind.COOL -> "COOL-DOWN"
         } + if (paused) " · PAUSED" else ""
         wPhaseKicker.setTextColor(kindCol)
-        wPhaseTitle.text = when (ph.kind) {
+        wPhaseTitle.text = if (ph.verify) "All out" else if (ph.test) (if (ph.durSec - el <= 60) "All out" else "Hold it") else when (ph.kind) {
             Kind.WORK -> "Interval ${ph.idx}"
             Kind.REC -> "Recover"
             Kind.WARMUP -> "Warm up"
@@ -968,6 +982,7 @@ class MainActivity : Activity() {
 
         var label = when {
             !fresh -> "NO SIGNAL"
+            ph.test -> if (ph.verify || ph.durSec - el <= 60) "ALL OUT" else "MAX TEST"
             ph.zone == null -> "EASY"
             z == ZS.HIGH -> "TOO HIGH"
             z == ZS.LOW -> "TOO LOW"
@@ -977,7 +992,7 @@ class MainActivity : Activity() {
         if (fresh && (z == ZS.HIGH || z == ZS.LOW) && Engine.suppressed(z)) {
             label = if (z == ZS.LOW) "RAMPING UP · ${fmt((Engine.s?.grace ?: 0.0) - el)}" else "SETTLING · ${fmt((Engine.s?.grace ?: 0.0) - el)}"
         }
-        val pillCol = if (label.startsWith("RAMP") || label.startsWith("SETTL")) Ui.MUTED else if (z == ZS.NONE) Ui.MUTED else zc
+        val pillCol = if (ph.test && fresh) Ui.TEST else if (label.startsWith("RAMP") || label.startsWith("SETTL")) Ui.MUTED else if (z == ZS.NONE) Ui.MUTED else zc
         wPill.text = label
         wPill.setTextColor(pillCol)
         wPill.background = shape(Ui.alpha(pillCol, 0.16f), 100f)
@@ -1030,7 +1045,7 @@ class MainActivity : Activity() {
         data class Row(val idx: Int, val avg: Int, val peak: Int, val inz: Int, val drop: Int?)
         val rows = mutableListOf<Row>()
         plan.forEachIndexed { i, ph ->
-            if (ph.kind != Kind.WORK) return@forEachIndexed
+            if (ph.kind != Kind.WORK || ph.test) return@forEachIndexed
             val xs = samples.filter { it.phase == i }.map { it.hr }
             if (xs.isEmpty()) return@forEachIndexed
             var drop: Int? = null
@@ -1050,7 +1065,7 @@ class MainActivity : Activity() {
         sMeta.text = "$date · $mins min"
 
         // tiles
-        val workSamples = samples.filter { it.kind == Kind.WORK }.map { it.hr }
+        val workSamples = samples.filter { it.kind == Kind.WORK && plan.getOrNull(it.phase)?.test != true }.map { it.hr }
         val avgWork = if (workSamples.isNotEmpty()) workSamples.average().roundToInt().toString() else "–"
         val peak = if (samples.isNotEmpty()) samples.maxOf { it.hr }.toString() else "–"
         val inZone = if (workSamples.isNotEmpty()) "${(workSamples.count { it >= floor } * 100.0 / workSamples.size).roundToInt()}%" else "–"
@@ -1059,7 +1074,30 @@ class MainActivity : Activity() {
         sMaxCard.removeAllViews()
         sMaxCard.visibility = View.GONE
         val peakHr = Engine.sessionPeak
-        if (peakHr > s.maxHr) {
+        val mt = Engine.maxTestResult()
+        if (mt != null) {
+            sMaxCard.visibility = View.VISIBLE
+            sMaxCard.addView(kicker("Max test result", Ui.TEST))
+            val big = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.BOTTOM }
+            big.addView(tv("${mt.estimate}", 48f, Ui.TEXT, Ui.light).apply { fontFeatureSettings = "tnum" })
+            big.addView(tv("bpm estimated max", 15f, Ui.MUTED).apply { setPadding(dp(8), 0, 0, dp(8)) })
+            sMaxCard.addSpaced(big, 6)
+            val detail = buildString {
+                append("Test interval peak: ${mt.testPeak} bpm")
+                mt.verifyPeak?.let { append("\nVerification sprint peak: $it bpm") }
+                append("\n\n")
+                when (mt.plateau) {
+                    true -> append("The sprint didn't push you higher, so you were at your ceiling. This is a good estimate, likely within a few beats of a lab test.")
+                    false -> append("The sprint went higher than the test, so the test wasn't quite maximal. Your max is at least ${mt.estimate}; repeat the test on a fresh day.")
+                    null -> append("Without a verification sprint this is a near-max estimate. 4-minute efforts tend to finish a few beats short of true max, so it's more likely slightly low than high.")
+                }
+                if (mt.estimate < s.maxHr) append("\n\nIt's below your current setting (${s.maxHr}). Only lower your max if you truly emptied the tank.")
+            }
+            sMaxCard.addSpaced(tv(detail, 14f, Ui.TEXT).apply { setLineSpacing(0f, 1.25f) }, 8)
+            if (mt.estimate != s.maxHr) {
+                sMaxCard.addSpaced(primaryBtn("Set max heart rate to ${mt.estimate}") { setMaxHr(mt.estimate); sMaxCard.visibility = View.GONE }, 12)
+            }
+        } else if (peakHr > s.maxHr) {
             sMaxCard.visibility = View.VISIBLE
             sMaxCard.addView(kicker("New max heart rate", Ui.WORK))
             sMaxCard.addSpaced(tv("You hit $peakHr bpm, above your max setting of ${s.maxHr}. Your zones are percentages of max, so they're currently set too low.", 14f, Ui.TEXT).apply { setLineSpacing(0f, 1.25f) }, 8)

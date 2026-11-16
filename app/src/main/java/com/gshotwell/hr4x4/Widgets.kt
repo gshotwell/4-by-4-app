@@ -30,11 +30,13 @@ object Ui {
     const val REC = 0xFF60A5FA.toInt()
     const val WARM = 0xFFA78BFA.toInt()
     const val COOL = 0xFF94A3B8.toInt()
+    const val TEST = 0xFFF43F5E.toInt()
 
     const val PRIMARY = 0xFF34D399.toInt()
     const val ON_PRIMARY = 0xFF06281C.toInt()
     const val DANGER = 0xFF3A1D22.toInt()
 
+    fun phaseColor(p: Phase) = if (p.test) TEST else kindColor(p.kind)
     fun kindColor(k: Kind) = when (k) { Kind.WORK -> WORK; Kind.REC -> REC; Kind.WARMUP -> WARM; Kind.COOL -> COOL }
     fun zoneColor(z: ZS) = when (z) { ZS.HIGH -> HIGH; ZS.LOW -> LOW; ZS.IN -> IN; ZS.NONE -> MUTED }
     fun alpha(c: Int, a: Float) = Color.argb((a * 255).toInt(), Color.red(c), Color.green(c), Color.blue(c))
@@ -89,7 +91,7 @@ class TimelineView(ctx: Context) : View(ctx) {
         var x = 0f
         plan.forEachIndexed { i, ph ->
             val w = max(usable * (ph.durSec.toFloat() / total), h)
-            val col = Ui.kindColor(ph.kind)
+            val col = Ui.phaseColor(ph)
             r.set(x, 0f, x + w, h)
             p.color = when {
                 current < 0 -> Ui.alpha(col, 0.85f)

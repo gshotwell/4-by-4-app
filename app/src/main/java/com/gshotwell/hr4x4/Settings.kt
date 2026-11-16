@@ -61,6 +61,8 @@ class Settings(val num: Map<String, Double>, val bool: Map<String, Boolean>) {
             BoolSpec("vibrate", "Vibrate", true),
             BoolSpec("countdown", "Countdown beeps (last 3 s)", true),
             BoolSpec("keepScreen", "Keep screen on during workout", true),
+            BoolSpec("maxTest", "Max test in the last interval", false),
+            BoolSpec("maxVerify", "Verification sprint after the max test", true),
             BoolSpec("skipWork", "Next song when each interval starts", true),
             BoolSpec("skipRec", "Next song when each recovery starts", true),
             BoolSpec("health", "Save sessions to Health Connect", false),

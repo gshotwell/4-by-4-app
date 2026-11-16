@@ -127,6 +127,11 @@ class WorkoutService : Service(), Engine.Sink {
     override fun finished() {
         val peak = Engine.sessionPeak
         val p = getSharedPreferences(Settings.PREFS, MODE_PRIVATE)
+        Engine.maxTestResult()?.let { r ->
+            p.edit().putInt("maxTestResult", r.estimate).putLong("maxTestWall", Engine.sessionStartWall)
+                .putBoolean("maxTestPlateau", r.plateau == true).apply()
+            Engine.log("Max test: peak ${r.testPeak}" + (r.verifyPeak?.let { ", verification $it" } ?: "") + " → estimate ${r.estimate}")
+        }
         if (peak > p.getInt("maxSeen", 0)) {
             p.edit().putInt("maxSeen", peak).putLong("maxSeenWall", Engine.sessionStartWall).apply()
             Engine.log("New highest heart rate recorded: $peak bpm")
