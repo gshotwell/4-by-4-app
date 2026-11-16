@@ -52,6 +52,7 @@ class Settings(private val num: Map<String, Double>, private val bool: Map<Strin
             NumSpec("confirm", "Hold a change for (s)", 2.0),
             NumSpec("hyst", "Hysteresis (bpm)", 2.0),
             NumSpec("remind", "Repeat while out of zone (s, 0 = off)", 20.0),
+            NumSpec("speechRate", "Speech rate (1 = normal)", 1.0, true),
         )
         val MAX_SPEC = NumSpec("maxHr", "Max heart rate", 185.0)
         val NUM_SPECS = listOf(MAX_SPEC) + ZONE_SPECS + TIME_SPECS + ALERT_SPECS

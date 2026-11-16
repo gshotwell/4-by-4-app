@@ -140,9 +140,24 @@ class WorkoutService : Service(), Engine.Sink {
     // ---------- Sink ----------
     override fun sound(s: Snd) = sounds.play(s, Engine.s?.vibrate ?: true)
 
+    private var appliedVoice: String? = null
+
+    /** Picks up voice / rate changes made in the app without restarting the service. */
+    private fun applyVoicePrefs(t: TextToSpeech) {
+        val p = getSharedPreferences(Settings.PREFS, MODE_PRIVATE)
+        val want = p.getString("voiceName", null)
+        if (want != appliedVoice) {
+            appliedVoice = want
+            val v = want?.let { n -> try { t.voices?.firstOrNull { it.name == n } } catch (_: Exception) { null } }
+            if (v != null) t.voice = v else t.language = Locale.getDefault()
+        }
+        t.setSpeechRate(p.getFloat("speechRate", 1f).coerceIn(0.5f, 2.5f))
+    }
+
     override fun say(text: String) {
         val t = tts ?: return
         if (!ttsReady) return
+        applyVoicePrefs(t)
         sounds.acquireFocus()
         // slight delay so speech doesn't talk over the tone that usually precedes it
         main.postDelayed({

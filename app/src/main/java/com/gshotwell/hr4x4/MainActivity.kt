@@ -87,6 +87,8 @@ class MainActivity : Activity() {
     private var savedCsv: File? = null
 
     private lateinit var logText: TextView
+    private lateinit var voiceBtn: Button
+    private var previewTts: android.speech.tts.TextToSpeech? = null
     private var shownLogVersion = -1
     private lateinit var sounds: Sounds
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -204,6 +206,63 @@ class MainActivity : Activity() {
         if (!hasBtPerms()) { Engine.log("Can't auto-connect: Bluetooth permission missing"); return }
         if (Engine.conn != Conn.NONE) return
         WorkoutService.send(this, WorkoutService.ACTION_CONNECT, addr, prefs().getString("strapName", null))
+    }
+
+    // ---------------------------------------------------------------- voice
+    private fun voiceLabel(): String {
+        val n = prefs().getString("voiceName", null) ?: return "Voice: phone default"
+        return "Voice: " + prefs().getString("voiceLabel", n)
+    }
+
+    private fun describe(v: android.speech.tts.Voice): String {
+        val loc = v.locale.getDisplayName(Locale.getDefault())
+        // Pixel names look like "en-us-x-iom-local"; the 3-letter chunk identifies the speaker.
+        val id = v.name.split("-").let { parts ->
+            val x = parts.indexOf("x"); if (x >= 0 && x + 1 < parts.size) parts[x + 1] else v.name
+        }
+        val net = if (v.isNetworkConnectionRequired) " · needs internet" else ""
+        return "$loc · $id$net"
+    }
+
+    private fun pickVoice() {
+        voiceBtn.text = "Loading voices…"
+        previewTts?.shutdown()
+        lateinit var t: android.speech.tts.TextToSpeech
+        t = android.speech.tts.TextToSpeech(this) { status ->
+            runOnUiThread {
+                voiceBtn.text = voiceLabel()
+                if (status != android.speech.tts.TextToSpeech.SUCCESS) { toast("Text-to-speech isn't available"); return@runOnUiThread }
+                val lang = Locale.getDefault().language
+                val voices = (t.voices ?: emptySet())
+                    .filter { it.locale.language == lang && !it.features.contains("notInstalled") }
+                    .sortedWith(compareBy({ it.isNetworkConnectionRequired }, { it.locale.toString() }, { it.name }))
+                if (voices.isEmpty()) { toast("No voices found for your language"); return@runOnUiThread }
+                val labels = arrayOf("Phone default") + voices.map { describe(it) }.toTypedArray()
+                val current = prefs().getString("voiceName", null)
+                val checked = voices.indexOfFirst { it.name == current } + 1
+                var choice = checked
+                t.setSpeechRate(prefs().getFloat("speechRate", 1f))
+                AlertDialog.Builder(this)
+                    .setTitle("Pick a voice (tap to hear it)")
+                    .setSingleChoiceItems(labels, checked) { _, which ->
+                        choice = which
+                        if (which == 0) t.language = Locale.getDefault() else t.voice = voices[which - 1]
+                        t.speak("Interval two. Go. Target 157 to 176. Too high.", android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "preview")
+                    }
+                    .setPositiveButton("Use this voice") { _, _ ->
+                        val e = prefs().edit()
+                        if (choice <= 0) e.remove("voiceName").remove("voiceLabel")
+                        else e.putString("voiceName", voices[choice - 1].name).putString("voiceLabel", labels[choice])
+                        e.apply()
+                        voiceBtn.text = voiceLabel()
+                        Engine.log("Voice set to ${if (choice <= 0) "phone default" else labels[choice]}")
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .setOnDismissListener { t.stop(); t.shutdown(); if (previewTts === t) previewTts = null }
+                    .show()
+            }
+        }
+        previewTts = t
     }
 
     // ---------------------------------------------------------------- scanning
@@ -403,6 +462,8 @@ class MainActivity : Activity() {
         Settings.ALERT_SPECS.forEach { alerts.addView(numRow(it, st.n(it.key))) }
         alerts.addView(tv("Ramp grace holds off “too low” at the start of work and warm-up, and “too high” at the start of recovery, while your HR catches up.", 13f, color = MUTED))
         Settings.BOOL_SPECS.forEach { alerts.addView(boolRow(it, st.b(it.key))) }
+        voiceBtn = btn(voiceLabel()) { pickVoice() }
+        alerts.addSpaced(voiceBtn, 8)
         alerts.addSpaced(row(
             btn("Test high") { sounds.play(Snd.HIGH, true) },
             btn("Test low") { sounds.play(Snd.LOW, true) },
