@@ -350,6 +350,46 @@ object Engine {
         return MaxTest(t, v, maxOf(t, v ?: 0), plateau)
     }
 
+    // ---------- demo (screenshots) ----------
+    fun demoConnected(name: String, hr: Int) {
+        conn = Conn.CONNECTED; connName = name
+        lastHr = hr; lastHrAt = now() + 60_000   // stays "fresh" for the screenshot
+        notifyUi()
+    }
+
+    /** Start a workout and jump to [elapsedSec] into the given interval. */
+    fun demoJump(interval: Int, elapsedSec: Double) {
+        val idx = plan.indexOfFirst { it.kind == Kind.WORK && it.idx == interval }
+        if (idx < 0) return
+        phaseIdx = idx; phaseStart = now() - (elapsedSec * 1000).toLong()
+        zone = ZS.NONE; pending = null; lastAnnounced = ZS.NONE
+        notifyUi()
+    }
+
+    /** Synthesise a plausible finished session so the summary screen has something to show. */
+    fun demoSummary(st: Settings) {
+        s = st; plan = buildPlan(st); samples.clear()
+        val rnd = java.util.Random(4)
+        var hr = 72.0; var t = 0.0
+        plan.forEachIndexed { i, ph ->
+            val target = when (ph.kind) {
+                Kind.WORK -> st.bpm(90.5) + ph.idx * 1.2
+                Kind.REC, Kind.WARMUP -> st.bpm(68.0).toDouble()
+                Kind.COOL -> 104.0
+            }
+            val tau = if (ph.kind == Kind.WORK) 38.0 else 30.0
+            repeat(ph.durSec.toInt()) {
+                hr += (target - hr) / tau + rnd.nextGaussian() * 0.7
+                samples += Sample(t, Math.round(hr).toInt(), i, ph.kind); t += 1.0
+            }
+        }
+        sessionStartWall = System.currentTimeMillis() - (t * 1000).toLong()
+        sessionStartMono = now() - (t * 1000).toLong()
+        sessionPeak = medianPeak { true }
+        running = true; finished = false; pausedAt = null
+        finish(announce = false)
+    }
+
     fun csv(): String = buildString {
         append("seconds,hr,phase_index,phase\n")
         samples.forEach { append("%.1f,%d,%d,%s\n".format(it.t, it.hr, it.phase, it.kind.name.lowercase())) }

@@ -31,6 +31,7 @@ class WorkoutService : Service(), Engine.Sink {
         const val ACTION_END = "end"
         const val ACTION_STOP = "stop"
         const val ACTION_RESUME = "resume"
+        const val ACTION_DEMO = "demo"
         const val EXTRA_ADDR = "addr"
         const val EXTRA_NAME = "name"
         private const val CHANNEL = "workout"
@@ -94,6 +95,14 @@ class WorkoutService : Service(), Engine.Sink {
             ACTION_START -> startWorkout()
             ACTION_END -> Engine.finish()
             ACTION_STOP -> { stopEverything(); return START_NOT_STICKY }
+            ACTION_DEMO -> {
+                val base = Settings.load(this)
+                val st = Settings(base.num, base.bool + ("sim" to true) + ("voice" to false))
+                simHr = st.bpm(91.0).toDouble()
+                acquireWakeLock()
+                Engine.start(st)
+                Engine.demoJump(2, 133.0)
+            }
             ACTION_RESUME, null -> tryResume()   // null = system restarted us after a kill
         }
         // Ask Android to restart the service if it's killed mid-workout.

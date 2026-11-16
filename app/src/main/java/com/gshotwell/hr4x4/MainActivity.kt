@@ -147,6 +147,15 @@ class MainActivity : Activity() {
     }
 
     private fun handleIntent(i: Intent?) {
+        // Screenshot/demo hooks, driven from CI: adb shell am start -n …/.MainActivity --es demo setup|workout|summary
+        when (i?.getStringExtra("demo")) {
+            "setup" -> Engine.demoConnected("Polar H10 D56E902D", 64)
+            "summary" -> Engine.demoSummary(Settings.load(this))
+            "workout" -> {
+                Engine.demoConnected("Polar H10 D56E902D", 150)
+                WorkoutService.send(this, WorkoutService.ACTION_DEMO)
+            }
+        }
         val a = i?.action ?: return
         if (a == "androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" || a == "android.intent.action.VIEW_PERMISSION_USAGE") {
             AlertDialog.Builder(this)
