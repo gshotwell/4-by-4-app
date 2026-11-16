@@ -60,6 +60,9 @@ class Settings(private val num: Map<String, Double>, private val bool: Map<Strin
             BoolSpec("vibrate", "Vibrate", true),
             BoolSpec("countdown", "Countdown beeps (last 3 s)", true),
             BoolSpec("keepScreen", "Keep screen on during workout", true),
+            BoolSpec("skipWork", "Next song when each interval starts", true),
+            BoolSpec("skipRec", "Next song when each recovery starts", true),
+            BoolSpec("health", "Save sessions to Health Connect", false),
             BoolSpec("sim", "Simulated heart rate (testing, no strap)", false),
         )
 

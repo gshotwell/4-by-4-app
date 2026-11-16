@@ -38,6 +38,11 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlin.math.ceil
 import kotlin.math.roundToInt
 
@@ -83,6 +88,8 @@ class MainActivity : Activity() {
     private var savedCsv: File? = null
 
     private lateinit var sounds: Sounds
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private lateinit var healthText: TextView
     private val listener: () -> Unit = { render() }
 
     // ---------------------------------------------------------------- lifecycle
@@ -91,6 +98,56 @@ class MainActivity : Activity() {
         sounds = Sounds(this)
         buildUi()
         requestPermsIfNeeded()
+        handleIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        handleIntent(intent)
+    }
+
+    override fun onDestroy() {
+        scope.cancel()
+        super.onDestroy()
+    }
+
+    private fun handleIntent(i: Intent?) {
+        val a = i?.action ?: return
+        if (a == "androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" || a == "android.intent.action.VIEW_PERMISSION_USAGE") {
+            AlertDialog.Builder(this)
+                .setTitle("Health Connect")
+                .setMessage("4x4 Coach only writes data: each finished workout is saved as a HIIT exercise session with its heart-rate samples. It never reads your health data, and nothing leaves your phone.")
+                .setPositiveButton("OK", null)
+                .show()
+        }
+    }
+
+    // ---------------------------------------------------------------- Health Connect
+    private fun requestHealth() {
+        if (!HealthSync.available(this)) {
+            toast("Health Connect isn't available. Install or update it from the Play Store, then try again.")
+            boolInputs["health"]?.isChecked = false
+            return
+        }
+        scope.launch {
+            if (!HealthSync.hasPermissions(this@MainActivity)) {
+                try { startActivityForResult(HealthSync.permissionIntent(this@MainActivity), 2) }
+                catch (e: Exception) { toast("Couldn't open Health Connect: ${e.message}") }
+            }
+        }
+    }
+
+    @Deprecated("Activity result API on plain Activity")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        @Suppress("DEPRECATION")
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 2) {
+            val ok = HealthSync.parsePermissionResult(resultCode, data)
+            if (!ok) {
+                toast("Health Connect permission not granted")
+                boolInputs["health"]?.isChecked = false
+            } else toast("Health Connect connected")
+        }
     }
 
     override fun onResume() {
@@ -242,7 +299,11 @@ class MainActivity : Activity() {
         val sw = Switch(this).apply {
             text = spec.label; textSize = 15f; setTextColor(TEXT); isChecked = value
             setPadding(0, dp(8), 0, dp(8))
-            setOnCheckedChangeListener { _, _ -> currentSettings().save(this@MainActivity); render() }
+            setOnCheckedChangeListener { _, checked ->
+                currentSettings().save(this@MainActivity)
+                if (spec.key == "health" && checked) requestHealth()
+                render()
+            }
         }
         boolInputs[spec.key] = sw
         return sw
@@ -348,6 +409,8 @@ class MainActivity : Activity() {
         summaryBody = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         sumCard.addSpaced(summaryBody, 8)
         sumCard.addSpaced(tv("In zone = share of the interval at or above the work-zone floor. 60 s drop = fall in HR over the first minute of the next recovery.", 13f, color = MUTED), 8)
+        healthText = tv("", 13f, color = MUTED, center = true)
+        sumCard.addSpaced(healthText, 8)
         summaryView.addSpaced(sumCard)
         summaryView.addSpaced(row(
             btn("Share CSV") { shareCsv() },
@@ -490,9 +553,25 @@ class MainActivity : Activity() {
 
     private fun renderSummary() {
         scroll.setBackgroundColor(BG)
+        healthText.text = Engine.exportStatus
         if (summaryShownFor == Engine.sessionStartWall) return
         summaryShownFor = Engine.sessionStartWall
-        saveCsvFile()
+        if (Engine.exportedFor != Engine.sessionStartWall) {
+            Engine.exportedFor = Engine.sessionStartWall
+            saveCsvFile()
+            Engine.exportStatus = ""
+            if (boolInputs["health"]?.isChecked == true) {
+                Engine.exportStatus = "Saving to Health Connect…"
+                val start = Engine.sessionStartWall
+                val samples = Engine.samples.toList()
+                val reps = Engine.s?.n("reps")?.toInt() ?: 4
+                HealthSync.scope.launch {
+                    Engine.exportStatus = HealthSync.write(applicationContext, start, samples, reps)
+                    healthText.text = Engine.exportStatus
+                }
+            }
+            healthText.text = Engine.exportStatus
+        }
 
         val s = Engine.s ?: return
         val plan = Engine.plan

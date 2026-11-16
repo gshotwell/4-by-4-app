@@ -21,6 +21,7 @@ object Engine {
     interface Sink {
         fun sound(s: Snd)
         fun say(text: String)
+        fun mediaNext()
     }
 
     var sink: Sink? = null
@@ -42,6 +43,9 @@ object Engine {
     private var lastCountdown = -1
 
     val samples = mutableListOf<Sample>()
+    /** sessionStartWall of the last session already written to disk / Health Connect. */
+    var exportedFor = 0L
+    var exportStatus = ""
     var sessionStartWall = 0L; private set
     private var sessionStartMono = 0L
 
@@ -93,6 +97,10 @@ object Engine {
         if (i >= plan.size) { finish(); return }
         val ph = plan[i]
         sound(Snd.PHASE)
+        val st = s
+        if (st != null && ((ph.kind == Kind.WORK && st.b("skipWork")) || (ph.kind == Kind.REC && st.b("skipRec")))) {
+            sink?.mediaNext()
+        }
         val zt = ph.zone?.let { " Target ${it.lo} to ${it.hi}." } ?: ""
         when (ph.kind) {
             Kind.WORK -> say("Interval ${ph.idx}. Go.$zt")

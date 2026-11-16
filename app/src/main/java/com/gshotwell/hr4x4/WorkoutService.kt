@@ -150,6 +150,14 @@ class WorkoutService : Service(), Engine.Sink {
         }, 650)
     }
 
+    /** Same signal as a headset "next" button: works with Tidal, Spotify, etc. */
+    override fun mediaNext() {
+        val am = getSystemService(android.media.AudioManager::class.java) ?: return
+        val t = android.os.SystemClock.uptimeMillis()
+        am.dispatchMediaKeyEvent(android.view.KeyEvent(t, t, android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_MEDIA_NEXT, 0))
+        am.dispatchMediaKeyEvent(android.view.KeyEvent(t, t, android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_MEDIA_NEXT, 0))
+    }
+
     // ---------- notification ----------
     private fun fmt(sec: Double): String {
         val s = ceil(sec.coerceAtLeast(0.0)).toInt()
