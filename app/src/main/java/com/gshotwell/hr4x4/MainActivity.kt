@@ -26,7 +26,6 @@ import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.view.WindowManager
-import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -161,6 +160,8 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
+        stopScan()
+        if (::scanPanel.isInitialized) scanPanel.visibility = View.GONE
         Engine.removeListener(listener)
         super.onPause()
     }
@@ -206,6 +207,13 @@ class MainActivity : Activity() {
     }
 
     // ---------------------------------------------------------------- scanning
+    // Found straps appear as buttons on the setup screen. If exactly one strap shows up,
+    // it's picked automatically after a few seconds.
+    private lateinit var scanPanel: LinearLayout
+    private lateinit var scanStatus: TextView
+    private var scanCb: ScanCallback? = null
+    private val scanHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
     @SuppressLint("MissingPermission")
     private fun scanForStrap() {
         if (!hasBtPerms()) { requestPermsIfNeeded(); return }
@@ -213,50 +221,68 @@ class MainActivity : Activity() {
         if (adapter == null) { toast("No Bluetooth on this device"); return }
         if (!adapter.isEnabled) { startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)); return }
         val scanner = adapter.bluetoothLeScanner ?: run { toast("Bluetooth scanner unavailable"); return }
+        stopScan()
 
         val found = LinkedHashMap<String, String>()
         val others = HashSet<String>()
         Engine.log("Scanning for straps…")
-        val labels = ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, mutableListOf())
+        scanPanel.removeAllViews()
+        scanStatus.text = "Searching… wear the strap with damp electrodes."
+        scanPanel.addView(scanStatus)
+        scanPanel.visibility = View.VISIBLE
         val hrUuid = ParcelUuid(HrBle.HR_SERVICE)
+
         val cb = object : ScanCallback() {
-            override fun onScanFailed(errorCode: Int) { Engine.log("Scan failed: error $errorCode") }
+            override fun onScanFailed(errorCode: Int) {
+                Engine.log("Scan failed: error $errorCode")
+                scanStatus.text = "Scan failed (error $errorCode). Toggle Bluetooth and try again."
+            }
             override fun onScanResult(callbackType: Int, r: ScanResult) {
                 val name = r.scanRecord?.deviceName ?: r.device.name
                 val isHr = r.scanRecord?.serviceUuids?.contains(hrUuid) == true ||
                     name?.contains("Polar", ignoreCase = true) == true
                 if (!isHr) { others.add(r.device.address); return }
                 val addr = r.device.address
-                if (addr !in found) {
-                    found[addr] = name ?: addr
-                    Engine.log("Scan saw: ${name ?: "unnamed HR device"} ($addr) RSSI ${r.rssi}")
-                    labels.add("${name ?: "Unknown strap"}   ($addr)")
+                if (addr in found) return
+                val label = name ?: "Unknown strap"
+                found[addr] = label
+                Engine.log("Scan saw: $label ($addr) RSSI ${r.rssi}")
+                scanStatus.text = "Tap your strap:"
+                scanPanel.addSpaced(btn("$label", GREEN_BTN) { pickStrap(addr, label, "tapped") }, 8)
+                if (found.size == 1) {
+                    scanHandler.postDelayed({
+                        if (scanCb != null && found.size == 1) pickStrap(addr, label, "only strap found")
+                    }, 3000)
                 }
             }
         }
-        var stopped = false
-        fun stop() {
-            if (!stopped) {
-                stopped = true
-                try { scanner.stopScan(cb) } catch (_: Exception) {}
-                Engine.log("Scan stopped: ${found.size} heart-rate device(s), ${others.size} other device(s) seen")
-            }
-        }
-
-        AlertDialog.Builder(this)
-            .setTitle("Looking for straps… (wear it; wet the electrodes)")
-            .setAdapter(labels) { _, which ->
-                stop()
-                val addr = found.keys.elementAt(which)
-                val name = found[addr]
-                Engine.log("Picked $name")
-                prefs().edit().putString("strapAddr", addr).putString("strapName", name).apply()
-                WorkoutService.send(this, WorkoutService.ACTION_CONNECT, addr, name)
-            }
-            .setNegativeButton("Cancel", null)
-            .setOnDismissListener { stop() }
-            .show()
+        scanCb = cb
         scanner.startScan(null, ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(), cb)
+        scanHandler.postDelayed({
+            if (scanCb === cb) {
+                stopScan()
+                Engine.log("Scan timed out: ${found.size} heart-rate device(s), ${others.size} other device(s) seen")
+                if (found.isEmpty()) scanStatus.text = "No strap found. Wear it with damp electrodes, close other apps using it, then try again."
+            }
+        }, 20_000)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun stopScan() {
+        val cb = scanCb ?: return
+        scanCb = null
+        scanHandler.removeCallbacksAndMessages(null)
+        try { getSystemService(BluetoothManager::class.java)?.adapter?.bluetoothLeScanner?.stopScan(cb) } catch (_: Exception) {}
+    }
+
+    private fun pickStrap(addr: String, name: String, why: String) {
+        stopScan()
+        Engine.log("Picked $name ($why)")
+        prefs().edit().putString("strapAddr", addr).putString("strapName", name).apply()
+        scanPanel.removeAllViews()
+        scanPanel.visibility = View.GONE
+        // Force a fresh connection even if the service thinks it's mid-attempt.
+        WorkoutService.send(this, WorkoutService.ACTION_CONNECT, addr, name)
     }
 
     // ---------------------------------------------------------------- UI building
@@ -357,6 +383,9 @@ class MainActivity : Activity() {
         setupView = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         connectBtn = btn("Connect Polar H10", GREEN_BTN) { scanForStrap() }
         setupView.addSpaced(connectBtn)
+        scanStatus = tv("", 14f, color = MUTED)
+        scanPanel = card().apply { visibility = View.GONE }
+        setupView.addSpaced(scanPanel, 8)
 
         val zones = card()
         zones.addView(numRow(Settings.MAX_SPEC, st.n("maxHr")))
