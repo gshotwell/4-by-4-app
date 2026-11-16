@@ -50,6 +50,7 @@ import kotlin.math.roundToInt
 class MainActivity : Activity() {
 
     // ---------------------------------------------------------------- views
+    private lateinit var rootFrame: FrameLayout
     private lateinit var scroll: ScrollView
     private lateinit var setupView: LinearLayout
     private lateinit var summaryView: LinearLayout
@@ -549,9 +550,9 @@ class MainActivity : Activity() {
 
     // ---------------------------------------------------------------- build
     private fun buildUi() {
-        window.statusBarColor = Ui.BG
-        window.navigationBarColor = Ui.BG
+        // Android 15+ draws apps edge-to-edge; pad content clear of the status and navigation bars.
         val frame = FrameLayout(this).apply { setBackgroundColor(Ui.BG) }
+        rootFrame = frame
 
         val main = vcol()
         scroll = ScrollView(this).apply { isFillViewport = true; isVerticalScrollBarEnabled = false }
@@ -573,6 +574,15 @@ class MainActivity : Activity() {
         buildWorkout(workoutView)
         frame.addView(workoutView, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
 
+        frame.setOnApplyWindowInsetsListener { _, insets ->
+            val bars = if (Build.VERSION.SDK_INT >= 30)
+                insets.getInsets(android.view.WindowInsets.Type.systemBars() or android.view.WindowInsets.Type.displayCutout())
+                    .let { intArrayOf(it.left, it.top, it.right, it.bottom) }
+            else @Suppress("DEPRECATION") intArrayOf(insets.systemWindowInsetLeft, insets.systemWindowInsetTop, insets.systemWindowInsetRight, insets.systemWindowInsetBottom)
+            main.setPadding(bars[0], bars[1], bars[2], bars[3])
+            workoutView.setPadding(dp(20) + bars[0], dp(20) + bars[1], dp(20) + bars[2], dp(20) + bars[3])
+            insets
+        }
         setContentView(frame)
         refreshDerived()
     }
@@ -909,7 +919,7 @@ class MainActivity : Activity() {
             bottomBar.visibility = if (mode == 1) View.GONE else View.VISIBLE
             setBottomBar(mode)
             scroll.scrollTo(0, 0)
-            if (mode == 0) { refreshDerived(); window.decorView.setBackgroundColor(Ui.BG); workoutView.setBackgroundColor(Ui.BG) }
+            if (mode == 0) { refreshDerived(); rootFrame.setBackgroundColor(Ui.BG); workoutView.setBackgroundColor(Ui.BG) }
         }
         val keepScreen = mode == 1 && (switches["keepScreen"]?.isChecked ?: true)
         if (keepScreen) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -1014,8 +1024,7 @@ class MainActivity : Activity() {
 
         val bg = if (z == ZS.NONE || label.startsWith("RAMP") || label.startsWith("SETTL")) Ui.BG else Ui.blend(Ui.BG, zc, if (z == ZS.IN) 0.08f else 0.16f)
         workoutView.setBackgroundColor(bg)
-        window.statusBarColor = bg
-        window.navigationBarColor = bg
+        rootFrame.setBackgroundColor(bg)
     }
 
     private fun tile(value: String, label: String, color: Int = Ui.TEXT) = vcol().apply {
@@ -1026,7 +1035,7 @@ class MainActivity : Activity() {
     }
 
     private fun renderSummary() {
-        window.statusBarColor = Ui.BG; window.navigationBarColor = Ui.BG
+        rootFrame.setBackgroundColor(Ui.BG)
         sFoot.text = footText()
         if (summaryShownFor == Engine.sessionStartWall) return
         summaryShownFor = Engine.sessionStartWall

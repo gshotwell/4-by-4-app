@@ -7,12 +7,12 @@ val runNumber = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
 
 android {
     namespace = "com.gshotwell.hr4x4"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.gshotwell.hr4x4"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 36
         versionCode = runNumber
         versionName = "0.1.$runNumber"
     }
