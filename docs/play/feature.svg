@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="500" viewBox="0 0 1024 500">
+  <rect width="1024" height="500" fill="#0B0E14"/>
+  <g transform="translate(70 70)">
+    <text x="0" y="40" font-family="Inter" font-weight="600" font-size="22" letter-spacing="4" fill="#FB923C">NORWEGIAN 4×4</text>
+    <text x="0" y="130" font-family="Inter" font-weight="600" font-size="92" fill="#F2F5F9">4x4 Coach</text>
+    <text x="0" y="190" font-family="Inter" font-size="30" fill="#8A94A6">Heart-rate zone alerts for the Polar H10</text>
+    <g transform="translate(0 250)">
+      <rect x="0" y="0" width="120" height="14" rx="7" fill="#A78BFA"/>
+      <rect x="130" y="0" width="70" height="14" rx="7" fill="#FB923C"/>
+      <rect x="210" y="0" width="52" height="14" rx="7" fill="#60A5FA"/>
+      <rect x="272" y="0" width="70" height="14" rx="7" fill="#FB923C"/>
+      <rect x="352" y="0" width="52" height="14" rx="7" fill="#60A5FA"/>
+      <rect x="414" y="0" width="70" height="14" rx="7" fill="#FB923C"/>
+      <rect x="494" y="0" width="52" height="14" rx="7" fill="#60A5FA"/>
+      <rect x="556" y="0" width="70" height="14" rx="7" fill="#FB923C"/>
+      <rect x="636" y="0" width="60" height="14" rx="7" fill="#94A3B8"/>
+    </g>
+  </g>
+  <g transform="translate(870 250)">
+    <circle r="105" fill="none" stroke="#1C2330" stroke-width="18"/>
+    <circle r="105" fill="none" stroke="#FB923C" stroke-width="18" stroke-linecap="round" stroke-dasharray="440 660" transform="rotate(-90)"/>
+    <text x="0" y="14" text-anchor="middle" font-family="Inter" font-weight="300" font-size="62" fill="#34D399">168</text>
+    <text x="0" y="48" text-anchor="middle" font-family="Inter" font-size="20" fill="#8A94A6">IN ZONE</text>
+  </g>
+</svg>
