@@ -6,7 +6,7 @@ import android.content.Context
 data class NumSpec(val key: String, val label: String, val def: Double, val decimal: Boolean = false)
 data class BoolSpec(val key: String, val label: String, val def: Boolean)
 
-class Settings(private val num: Map<String, Double>, private val bool: Map<String, Boolean>) {
+class Settings(val num: Map<String, Double>, val bool: Map<String, Boolean>) {
     fun n(key: String): Double = num[key] ?: NUM_SPECS.first { it.key == key }.def
     fun b(key: String): Boolean = bool[key] ?: BOOL_SPECS.first { it.key == key }.def
 

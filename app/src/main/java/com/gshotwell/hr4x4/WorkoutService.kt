@@ -30,6 +30,7 @@ class WorkoutService : Service(), Engine.Sink {
         const val ACTION_START = "start"
         const val ACTION_END = "end"
         const val ACTION_STOP = "stop"
+        const val ACTION_RESUME = "resume"
         const val EXTRA_ADDR = "addr"
         const val EXTRA_NAME = "name"
         private const val CHANNEL = "workout"
@@ -60,6 +61,7 @@ class WorkoutService : Service(), Engine.Sink {
         ble = HrBle(this)
         sounds = Sounds(this)
         Engine.sink = this
+        Engine.store = SessionStore(this)
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Workout", NotificationManager.IMPORTANCE_LOW))
         tts = TextToSpeech(this) { status ->
@@ -92,8 +94,10 @@ class WorkoutService : Service(), Engine.Sink {
             ACTION_START -> startWorkout()
             ACTION_END -> Engine.finish()
             ACTION_STOP -> { stopEverything(); return START_NOT_STICKY }
+            ACTION_RESUME, null -> tryResume()   // null = system restarted us after a kill
         }
-        return START_NOT_STICKY
+        // Ask Android to restart the service if it's killed mid-workout.
+        return if (Engine.running) START_STICKY else START_NOT_STICKY
     }
 
     private fun startWorkout() {
@@ -101,6 +105,32 @@ class WorkoutService : Service(), Engine.Sink {
         simHr = 95.0
         acquireWakeLock()
         Engine.start(st)
+    }
+
+    private fun tryResume() {
+        if (Engine.running) return
+        val store = Engine.store ?: return
+        val saved = store.load() ?: return
+        if (saved.resumable) {
+            Engine.log("Resuming workout after the app was closed")
+            acquireWakeLock()
+            Engine.restore(saved)
+            if (Engine.running) say("Workout resumed")
+        } else {
+            Engine.log("Recovered an unfinished workout from ${java.text.DateFormat.getDateTimeInstance().format(java.util.Date(saved.startWall))}")
+            Engine.recoverFinished(saved)
+        }
+        val p = getSharedPreferences(Settings.PREFS, MODE_PRIVATE)
+        p.getString("strapAddr", null)?.let { ble.connect(it, p.getString("strapName", null)) }
+    }
+
+    override fun finished() {
+        val peak = Engine.sessionPeak
+        val p = getSharedPreferences(Settings.PREFS, MODE_PRIVATE)
+        if (peak > p.getInt("maxSeen", 0)) {
+            p.edit().putInt("maxSeen", peak).putLong("maxSeenWall", Engine.sessionStartWall).apply()
+            Engine.log("New highest heart rate recorded: $peak bpm")
+        }
     }
 
     private fun stopEverything() {

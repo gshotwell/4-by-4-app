@@ -22,7 +22,16 @@ object Engine {
         fun sound(s: Snd)
         fun say(text: String)
         fun mediaNext()
+        /** Called once when a session ends (normally or recovered). */
+        fun finished()
     }
+
+    var store: SessionStore? = null
+    /** Highest 5-sample median HR this session: robust to single-beat strap glitches. */
+    var sessionPeak = 0; private set
+    private val recentHr = ArrayDeque<Int>()
+    private var lastSaveAt = 0L
+    var savedCsvPath: String? = null; private set
 
     var sink: Sink? = null
     var s: Settings? = null
@@ -100,13 +109,57 @@ object Engine {
         sessionStartWall = System.currentTimeMillis()
         sessionStartMono = now()
         running = true; finished = false; pausedAt = null
+        sessionPeak = 0; recentHr.clear(); savedCsvPath = null
+        store?.begin()
         enterPhase(0)
+    }
+
+    /** Pick up a session the app was killed in the middle of. */
+    fun restore(sv: SessionStore.Saved) {
+        s = sv.settings
+        plan = buildPlan(sv.settings)
+        samples.clear(); samples.addAll(sv.samples)
+        sessionStartWall = sv.startWall; sessionStartMono = sv.startMono
+        phaseIdx = sv.phaseIdx; phaseStart = sv.phaseStartMono; pausedAt = sv.pausedAtMono
+        sessionPeak = sv.peak; recentHr.clear(); savedCsvPath = null
+        zone = ZS.NONE; pending = null; lastAlertAt = 0; lastAnnounced = ZS.NONE; lastCountdown = -1
+        running = true; finished = false
+        store?.reopen()
+        // Fast-forward through any phases that ended while the app was gone.
+        if (pausedAt == null) {
+            while (phaseIdx < plan.size && phaseElapsed() >= plan[phaseIdx].durSec) {
+                phaseStart += (plan[phaseIdx].durSec * 1000).toLong()
+                phaseIdx++
+            }
+        }
+        if (phaseIdx >= plan.size) { finish(announce = false); return }
+        saveState()
+        notifyUi()
+    }
+
+    /** Too old to resume: keep its data and show it as a finished session. */
+    fun recoverFinished(sv: SessionStore.Saved) {
+        s = sv.settings
+        plan = buildPlan(sv.settings)
+        samples.clear(); samples.addAll(sv.samples)
+        sessionStartWall = sv.startWall; sessionStartMono = sv.startMono
+        sessionPeak = sv.peak; savedCsvPath = null
+        phaseIdx = sv.phaseIdx.coerceAtMost(plan.size - 1); pausedAt = null
+        running = true
+        finish(announce = false)
+    }
+
+    private fun saveState() {
+        val st = s ?: return
+        lastSaveAt = now()
+        store?.saveState(st, phaseIdx, phaseStart, pausedAt, sessionStartWall, sessionStartMono, sessionPeak)
     }
 
     private fun enterPhase(i: Int) {
         phaseIdx = i; phaseStart = now(); lastCountdown = -1
         zone = ZS.NONE; pending = null; lastAlertAt = 0; lastAnnounced = ZS.NONE
         if (i >= plan.size) { finish(); return }
+        saveState()
         val ph = plan[i]
         sound(Snd.PHASE)
         val st = s
@@ -128,15 +181,18 @@ object Engine {
         val p = pausedAt
         if (p == null) { pausedAt = now(); say("Paused") }
         else { phaseStart += now() - p; pausedAt = null; say("Resumed") }
+        saveState()
         notifyUi()
     }
 
     fun skip() { if (running) enterPhase(phaseIdx + 1) }
 
-    fun finish() {
+    fun finish(announce: Boolean = true) {
         if (!running) return
         running = false; finished = true; pausedAt = null; zone = ZS.NONE
-        say("Workout complete")
+        savedCsvPath = store?.finish(csv(), sessionStartWall)
+        sink?.finished()
+        if (announce) say("Workout complete")
         notifyUi()
     }
 
@@ -153,6 +209,7 @@ object Engine {
             if (sec in 1..3 && sec != lastCountdown) { lastCountdown = sec; sound(Snd.TICK) }
         }
         if (remain <= 0) { enterPhase(phaseIdx + 1); return }
+        if (now() - lastSaveAt >= 1000) saveState()
         notifyUi()
     }
 
@@ -160,7 +217,15 @@ object Engine {
         lastHr = hr; lastHrAt = now()
         if (running && pausedAt == null) {
             val ph = plan[phaseIdx]
-            samples += Sample((now() - sessionStartMono) / 1000.0, hr, phaseIdx, ph.kind)
+            val smp = Sample((now() - sessionStartMono) / 1000.0, hr, phaseIdx, ph.kind)
+            samples += smp
+            store?.append(smp)
+            recentHr.addLast(hr)
+            while (recentHr.size > 5) recentHr.removeFirst()
+            if (recentHr.size == 5) {
+                val med = recentHr.sorted()[2]
+                if (med > sessionPeak) sessionPeak = med
+            }
             evaluate(hr)
         }
     }

@@ -41,7 +41,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -92,11 +91,14 @@ class MainActivity : Activity() {
     // summary
     private lateinit var sMeta: TextView
     private lateinit var sTiles: LinearLayout
+    private lateinit var sMaxCard: LinearLayout
+    private lateinit var maxSeenRow: LinearLayout
+    private lateinit var maxSeenText: TextView
+    private lateinit var maxSeenBtn: Button
     private lateinit var sChart: HrChartView
     private lateinit var sIntervals: LinearLayout
     private lateinit var sFoot: TextView
     private var summaryShownFor = 0L
-    private var savedCsv: File? = null
 
     private lateinit var sounds: Sounds
     private var previewTts: TextToSpeech? = null
@@ -112,6 +114,9 @@ class MainActivity : Activity() {
         requestPermsIfNeeded()
         handleIntent(intent)
         if (Engine.logLines.isEmpty()) logPermState()
+        if (!Engine.running && !Engine.finished && SessionStore.hasActive(this)) {
+            WorkoutService.send(this, WorkoutService.ACTION_RESUME)
+        }
     }
 
     override fun onNewIntent(intent: Intent?) {
@@ -467,6 +472,8 @@ class MainActivity : Activity() {
 
         init { show() }
 
+        fun set(v: Double) { value = v.coerceIn(r.min, r.max); show() }
+
         private fun show() {
             label.text = if (r.step < 1.0 && value % 1.0 != 0.0) "%.1f".format(value).trimEnd('0').trimEnd('.') else value.toInt().toString()
         }
@@ -606,6 +613,18 @@ class MainActivity : Activity() {
         // zones
         val zones = card("Heart-rate zones")
         zones.addView(settingRow("Max heart rate", "every zone is a % of this", stepper("maxHr")))
+        maxSeenText = tv("", 13f, Ui.MUTED).apply { setLineSpacing(0f, 1.2f) }
+        maxSeenBtn = secondaryBtn("Use") {
+            val v = prefs().getInt("maxSeen", 0)
+            if (v > 0) setMaxHr(v)
+        }.apply { minHeight = dp(40); minimumHeight = dp(40); textSize = 14f }
+        maxSeenRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(10))
+            addView(maxSeenText, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(maxSeenBtn, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = dp(10) })
+        }
+        zones.addView(maxSeenRow)
         zones.addView(divider(), LinearLayout.LayoutParams(MATCH_PARENT, dp(1)))
         fun zoneRow(name: String, color: Int, lo: String, hi: String, key: String) {
             val l = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(12), 0, dp(4)) }
@@ -736,8 +755,10 @@ class MainActivity : Activity() {
         sMeta = tv("", 14f, Ui.MUTED).apply { setPadding(0, dp(6), 0, 0) }
         v.addView(sMeta)
 
+        sMaxCard = card().apply { visibility = View.GONE }
+        v.addSpaced(sMaxCard, 18)
         sTiles = vcol()
-        v.addSpaced(sTiles, 18)
+        v.addSpaced(sTiles, 12)
 
         val chart = card("Heart rate")
         sChart = HrChartView(this)
@@ -784,6 +805,17 @@ class MainActivity : Activity() {
         zoneBpm["work"]?.text = z("workLo", "workHi")
         zoneBpm["rec"]?.text = z("recLo", "recHi")
         zoneBpm["wu"]?.text = z("wuLo", "wuHi")
+        val seen = prefs().getInt("maxSeen", 0)
+        if (seen <= 0) {
+            maxSeenText.text = "Highest seen: none yet. A hard session will record your peak, and the app will offer to update this when you beat it."
+            maxSeenBtn.visibility = View.GONE
+        } else {
+            val d = SimpleDateFormat("d MMM", Locale.getDefault()).format(Date(prefs().getLong("maxSeenWall", 0)))
+            maxSeenText.text = "Highest seen: $seen bpm ($d)" +
+                if (seen < s.maxHr) "\nBelow your setting. That's normal: 4x4 sessions rarely reach true max." else ""
+            maxSeenBtn.visibility = if (seen > s.maxHr) View.VISIBLE else View.GONE
+            maxSeenBtn.text = "Use $seen"
+        }
     }
 
     // ---------------------------------------------------------------- actions
@@ -814,14 +846,13 @@ class MainActivity : Activity() {
 
     private fun stamp() = SimpleDateFormat("yyyy-MM-dd_HHmm", Locale.US).format(Date(Engine.sessionStartWall))
 
-    private fun saveCsvFile() {
-        try {
-            val dir = getExternalFilesDir("sessions") ?: filesDir
-            val f = File(dir, "4x4_${stamp()}.csv")
-            f.writeText(Engine.csv())
-            savedCsv = f
-        } catch (_: Exception) { savedCsv = null }
+    private fun setMaxHr(v: Int) {
+        steppers["maxHr"]?.set(v.toDouble())
+        onSettingsChanged()
+        toast("Max heart rate set to $v. Zones updated.")
     }
+
+    private fun footText() = listOfNotNull(Engine.exportStatus.ifBlank { null }, Engine.savedCsvPath?.let { "CSV saved to $it" }).joinToString("\n")
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_LONG).show()
 
@@ -972,13 +1003,12 @@ class MainActivity : Activity() {
 
     private fun renderSummary() {
         window.statusBarColor = Ui.BG; window.navigationBarColor = Ui.BG
-        sFoot.text = listOfNotNull(Engine.exportStatus.ifBlank { null }, savedCsv?.let { "CSV saved to ${it.absolutePath}" }).joinToString("\n")
+        sFoot.text = footText()
         if (summaryShownFor == Engine.sessionStartWall) return
         summaryShownFor = Engine.sessionStartWall
 
         if (Engine.exportedFor != Engine.sessionStartWall) {
             Engine.exportedFor = Engine.sessionStartWall
-            saveCsvFile()
             Engine.exportStatus = ""
             if (switches["health"]?.isChecked == true) {
                 Engine.exportStatus = "Saving to Health Connect…"
@@ -987,7 +1017,7 @@ class MainActivity : Activity() {
                 val reps = Engine.s?.n("reps")?.toInt() ?: 4
                 HealthSync.scope.launch {
                     Engine.exportStatus = HealthSync.write(applicationContext, start, samples, reps)
-                    sFoot.text = listOfNotNull(Engine.exportStatus, savedCsv?.let { "CSV saved to ${it.absolutePath}" }).joinToString("\n")
+                    sFoot.text = footText()
                 }
             }
         }
@@ -1026,6 +1056,15 @@ class MainActivity : Activity() {
         val inZone = if (workSamples.isNotEmpty()) "${(workSamples.count { it >= floor } * 100.0 / workSamples.size).roundToInt()}%" else "–"
         val drops = rows.mapNotNull { it.drop }
         val avgDrop = if (drops.isNotEmpty()) "${drops.average().roundToInt()}" else "–"
+        sMaxCard.removeAllViews()
+        sMaxCard.visibility = View.GONE
+        val peakHr = Engine.sessionPeak
+        if (peakHr > s.maxHr) {
+            sMaxCard.visibility = View.VISIBLE
+            sMaxCard.addView(kicker("New max heart rate", Ui.WORK))
+            sMaxCard.addSpaced(tv("You hit $peakHr bpm, above your max setting of ${s.maxHr}. Your zones are percentages of max, so they're currently set too low.", 14f, Ui.TEXT).apply { setLineSpacing(0f, 1.25f) }, 8)
+            sMaxCard.addSpaced(primaryBtn("Set max heart rate to $peakHr") { setMaxHr(peakHr); sMaxCard.visibility = View.GONE }, 12)
+        }
         sTiles.removeAllViews()
         sTiles.addView(hrow(tile(avgWork, "Avg work HR"), tile(peak, "Peak HR"), gap = 10))
         sTiles.addSpaced(hrow(tile(inZone, "Work time ≥ $floor bpm", Ui.IN), tile(avgDrop, "Avg 1-min drop"), gap = 10), 10)
